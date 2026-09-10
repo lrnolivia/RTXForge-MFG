@@ -1201,6 +1201,44 @@ sl::Result StreamlineHooks::hkslSetConstants(const sl::Constants& values, const 
     std::scoped_lock lock(setConstantsMutex);
     LOG_TRACE("called with frameIndex: {}, viewport: {}", (unsigned int) frame, (unsigned int) viewport);
 
+    // RTXForge.NativeMfgMenu.v3b:
+    // Diagnostic only. Prove that this already-initialized runtime path observes
+    // generations captured by the permanently synthetic game-facing SetOptions.
+    // Do not apply or forward DLSS-G from this probe.
+    static uint64_t lastSeenGeneration = 0;
+
+    uint64_t generation = 0;
+    uint32_t capturedViewport = 0;
+    uint32_t mode = 0;
+    uint32_t frames = 0;
+    bool valid = false;
+
+    {
+        std::scoped_lock bridgeLock(g_nativeDlssgBridge.mutex);
+
+        valid = g_nativeDlssgBridge.valid;
+        generation = g_nativeDlssgBridge.generation;
+        capturedViewport = g_nativeDlssgBridge.viewport;
+        mode = g_nativeDlssgBridge.mode;
+        frames = g_nativeDlssgBridge.numFramesToGenerate;
+    }
+
+    if (valid && generation != lastSeenGeneration)
+    {
+        lastSeenGeneration = generation;
+
+        LOG_INFO(
+            "RTXForge.NativeMfgMenu.v3b: SetConstants sees pending native request "
+            "generation={} frame={} runtimeViewport={} capturedViewport={} "
+            "mode={} numFramesToGenerate={}",
+            generation,
+            static_cast<uint32_t>(frame),
+            static_cast<uint32_t>(viewport),
+            capturedViewport,
+            mode,
+            frames);
+    }
+
     State::Instance().slFGInputs.setConstants(values, (uint32_t) frame);
 
     return o_slSetConstants(values, frame, viewport);
