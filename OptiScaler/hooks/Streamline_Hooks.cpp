@@ -638,6 +638,38 @@ sl::Result StreamlineHooks::hkslEvaluateFeature(sl::Feature feature, const sl::F
 {
     LOG_DEBUG("frameIndex: {}", static_cast<uint32_t>(frame));
 
+    if (feature == sl::kFeatureDLSS_G)
+    {
+        static uint64_t lastSeenGeneration = 0;
+
+        uint64_t generation = 0;
+        uint32_t mode = 0;
+        uint32_t frames = 0;
+        bool valid = false;
+
+        {
+            std::scoped_lock lock(g_nativeDlssgBridge.mutex);
+
+            valid = g_nativeDlssgBridge.valid;
+            generation = g_nativeDlssgBridge.generation;
+            mode = g_nativeDlssgBridge.mode;
+            frames = g_nativeDlssgBridge.numFramesToGenerate;
+        }
+
+        if (valid && generation != lastSeenGeneration)
+        {
+            lastSeenGeneration = generation;
+
+            LOG_INFO(
+                "RTXForge.NativeMfgMenu.v3a: EvaluateFeature sees pending native request "
+                "generation={} frame={} mode={} numFramesToGenerate={}",
+                generation,
+                static_cast<uint32_t>(frame),
+                mode,
+                frames);
+        }
+    }
+
     if (State::Instance().activeFgInput == FGInput::DLSSG && numInputs > 0 && inputs != nullptr)
     {
         for (uint32_t i = 0; i < numInputs; i++)
