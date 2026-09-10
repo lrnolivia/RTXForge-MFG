@@ -331,15 +331,14 @@ static uint32_t AdvertisedMfgMax()
 sl::Result StreamlineHooks::late_slDLSSGGetState(const sl::ViewportHandle& viewport, sl::DLSSGState& state,
                                                  const sl::DLSSGOptions* options)
 {
-    if (o_slDLSSGGetState != nullptr)
-    {
-        static std::once_flag forwardingLog;
-        std::call_once(forwardingLog, []() {
-            LOG_INFO("RTXForge.NativeMfgMenu.v2: native GetState is now forwarding to real DLSSG");
-        });
-
-        return hkslDLSSGGetState(viewport, state, options);
-    }
+    // RTXForge v2a:
+    // Keep this stable cached pointer synthetic for the entire process lifetime.
+    // TOW2 fatals if an early cached GetState pointer transitions to the real
+    // DLSS-G implementation after runtime initialization.
+    static std::once_flag syntheticLog;
+    std::call_once(syntheticLog, []() {
+        LOG_INFO("RTXForge.NativeMfgMenu.v2a: native GetState remains synthetic; SetOptions stays late-bound");
+    });
 
     state.numFramesActuallyPresented = 1;
 
