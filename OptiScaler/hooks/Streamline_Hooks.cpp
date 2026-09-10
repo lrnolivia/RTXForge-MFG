@@ -319,15 +319,36 @@ static uint32_t AdvertisedMfgMax()
     const auto unlocked = MfgUnlock::UnlockedMax();
     const auto advertised = unlocked > 0 ? (unlocked < 3u ? unlocked : 3u) : 3u;
     static const bool logged = []() {
-        LOG_INFO("RTXForge.NativeMfgMenu.v2: capability ceiling 4X; late-bound native controls");
+        LOG_INFO("RTXForge.NativeMfgMenu.v3: capability ceiling 4X; synthetic native control bridge");
         return true;
     }();
     return advertised;
 }
 
+namespace
+{
+struct NativeDlssgBridgeState
+{
+    std::mutex mutex;
+
+    bool valid = false;
+    uint32_t viewport = 0;
+    uint32_t structVersion = 0;
+    uint32_t mode = 0;
+    uint32_t numFramesToGenerate = 1;
+    uint32_t dynamicTargetFrameRate = 0;
+
+    uint64_t generation = 0;
+    uint64_t lastConsumedGeneration = 0;
+};
+
+NativeDlssgBridgeState g_nativeDlssgBridge;
+}
+
 // Stable pointers returned to games that query DLSS-G before sl.dlss_g has loaded.
-// Games may cache these pointers for the entire process lifetime, so they must
-// change behavior in-place once the real DLSS-G exports become available.
+// Games may cache these pointers for the entire process lifetime. Keep these
+// game-facing pointers synthetic permanently; native requests are bridged into
+// the already-initialized real DLSS-G path through process-local state.
 sl::Result StreamlineHooks::late_slDLSSGGetState(const sl::ViewportHandle& viewport, sl::DLSSGState& state,
                                                  const sl::DLSSGOptions* options)
 {
@@ -337,7 +358,7 @@ sl::Result StreamlineHooks::late_slDLSSGGetState(const sl::ViewportHandle& viewp
     // DLSS-G implementation after runtime initialization.
     static std::once_flag syntheticLog;
     std::call_once(syntheticLog, []() {
-        LOG_INFO("RTXForge.NativeMfgMenu.v2a: native GetState remains synthetic; SetOptions stays late-bound");
+        LOG_INFO("RTXForge.NativeMfgMenu.v3: native GetState remains synthetic");
     });
 
     state.numFramesActuallyPresented = 1;
@@ -357,16 +378,14 @@ sl::Result StreamlineHooks::late_slDLSSGGetState(const sl::ViewportHandle& viewp
 sl::Result StreamlineHooks::late_slDLSSGSetOptions(const sl::ViewportHandle& viewport,
                                                    const sl::DLSSGOptions& options)
 {
-    // RTXForge v2c:
-    // Keep the game's early-cached SetOptions pointer permanently synthetic.
-    // Instrument only: capture what the native menu requests without ever
-    // crossing into the real DLSS-G plugin from this cached callsite.
+    // RTXForge v3:
+    // This game-facing function remains permanently synthetic. Never call the
+    // real DLSS-G implementation from an early-cached pointer. Capture only
+    // primitive request state for the initialized runtime path to consume.
 
-    // Normalize into our current struct without reading beyond the caller's
-    // older struct version. This mirrors the safe copy logic used by the real
-    // hkslDLSSGSetOptions hook.
     sl::DLSSGOptions captured {};
 
+    // Match the safe-copy rules used by hkslDLSSGSetOptions.
     if (options.structVersion == 1)
         memcpy(&captured, &options, 104);
     else if (options.structVersion == 2 || options.structVersion == 3)
@@ -376,42 +395,50 @@ sl::Result StreamlineHooks::late_slDLSSGSetOptions(const sl::ViewportHandle& vie
     else
         captured = options;
 
-    static std::mutex captureMutex;
-    static bool haveLast = false;
-    static uint32_t lastStructVersion = 0;
-    static uint32_t lastMode = 0;
-    static uint32_t lastGeneratedFrames = 0;
-    static uint32_t lastTargetFps = 0;
+    const uint32_t capturedViewport = static_cast<uint32_t>(viewport);
+    const uint32_t capturedStructVersion = options.structVersion;
+    const uint32_t capturedMode = static_cast<uint32_t>(captured.mode);
+    const uint32_t capturedFrames = captured.numFramesToGenerate;
+    const uint32_t capturedTarget = captured.dynamicTargetFrameRate;
 
-    const uint32_t structVersion = options.structVersion;
-    const uint32_t mode = static_cast<uint32_t>(captured.mode);
-    const uint32_t generatedFrames = captured.numFramesToGenerate;
-    const uint32_t targetFps = captured.dynamicTargetFrameRate;
+    bool changed = false;
+    uint64_t generation = 0;
 
     {
-        std::scoped_lock lock(captureMutex);
+        std::scoped_lock lock(g_nativeDlssgBridge.mutex);
 
-        if (!haveLast ||
-            structVersion != lastStructVersion ||
-            mode != lastMode ||
-            generatedFrames != lastGeneratedFrames ||
-            targetFps != lastTargetFps)
+        if (!g_nativeDlssgBridge.valid ||
+            g_nativeDlssgBridge.viewport != capturedViewport ||
+            g_nativeDlssgBridge.structVersion != capturedStructVersion ||
+            g_nativeDlssgBridge.mode != capturedMode ||
+            g_nativeDlssgBridge.numFramesToGenerate != capturedFrames ||
+            g_nativeDlssgBridge.dynamicTargetFrameRate != capturedTarget)
         {
-            LOG_INFO(
-                "RTXForge.NativeMfgMenu.v2c: native SetOptions request "
-                "viewport={} structVersion={} mode={} numFramesToGenerate={} dynamicTargetFrameRate={}",
-                static_cast<uint32_t>(viewport),
-                structVersion,
-                mode,
-                generatedFrames,
-                targetFps);
+            g_nativeDlssgBridge.valid = true;
+            g_nativeDlssgBridge.viewport = capturedViewport;
+            g_nativeDlssgBridge.structVersion = capturedStructVersion;
+            g_nativeDlssgBridge.mode = capturedMode;
+            g_nativeDlssgBridge.numFramesToGenerate = capturedFrames;
+            g_nativeDlssgBridge.dynamicTargetFrameRate = capturedTarget;
+            ++g_nativeDlssgBridge.generation;
 
-            haveLast = true;
-            lastStructVersion = structVersion;
-            lastMode = mode;
-            lastGeneratedFrames = generatedFrames;
-            lastTargetFps = targetFps;
+            generation = g_nativeDlssgBridge.generation;
+            changed = true;
         }
+    }
+
+    if (changed)
+    {
+        LOG_INFO(
+            "RTXForge.NativeMfgMenu.v3: captured native request "
+            "generation={} viewport={} structVersion={} mode={} "
+            "numFramesToGenerate={} dynamicTargetFrameRate={}",
+            generation,
+            capturedViewport,
+            capturedStructVersion,
+            capturedMode,
+            capturedFrames,
+            capturedTarget);
     }
 
     return sl::Result::eOk;
@@ -1209,6 +1236,54 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
     {
         newOptions.mode = sl::DLSSGMode::eOff;
         return o_slDLSSGSetOptions(viewport, newOptions);
+    }
+
+    // RTXForge.NativeMfgMenu.v3:
+    // Overlay the latest native game request only from the initialized runtime
+    // path. The early game-facing callback never reaches this function.
+    bool bridgedRequestChanged = false;
+    uint64_t bridgedGeneration = 0;
+    uint32_t bridgedMode = 0;
+    uint32_t bridgedFrames = 1;
+    uint32_t bridgedTarget = 0;
+
+    if (state.activeFgInput == FGInput::DLSSG)
+    {
+        std::scoped_lock lock(g_nativeDlssgBridge.mutex);
+
+        if (g_nativeDlssgBridge.valid &&
+            g_nativeDlssgBridge.viewport == static_cast<uint32_t>(viewport))
+        {
+            bridgedGeneration = g_nativeDlssgBridge.generation;
+            bridgedMode = g_nativeDlssgBridge.mode;
+            bridgedFrames = g_nativeDlssgBridge.numFramesToGenerate;
+            bridgedTarget = g_nativeDlssgBridge.dynamicTargetFrameRate;
+
+            newOptions.mode = static_cast<sl::DLSSGMode>(bridgedMode);
+            newOptions.numFramesToGenerate = bridgedFrames;
+            newOptions.dynamicTargetFrameRate = bridgedTarget;
+
+            if (g_nativeDlssgBridge.lastConsumedGeneration !=
+                g_nativeDlssgBridge.generation)
+            {
+                g_nativeDlssgBridge.lastConsumedGeneration =
+                    g_nativeDlssgBridge.generation;
+                bridgedRequestChanged = true;
+            }
+        }
+    }
+
+    if (bridgedRequestChanged)
+    {
+        LOG_INFO(
+            "RTXForge.NativeMfgMenu.v3: bridged native request "
+            "generation={} viewport={} mode={} numFramesToGenerate={} "
+            "dynamicTargetFrameRate={}",
+            bridgedGeneration,
+            static_cast<uint32_t>(viewport),
+            bridgedMode,
+            bridgedFrames,
+            bridgedTarget);
     }
 
     // Make DLSSG auto always mean On
