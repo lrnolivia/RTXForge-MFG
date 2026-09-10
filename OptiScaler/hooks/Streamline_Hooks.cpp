@@ -357,15 +357,62 @@ sl::Result StreamlineHooks::late_slDLSSGGetState(const sl::ViewportHandle& viewp
 sl::Result StreamlineHooks::late_slDLSSGSetOptions(const sl::ViewportHandle& viewport,
                                                    const sl::DLSSGOptions& options)
 {
-    // RTXForge v2b:
-    // Keep an early cached native SetOptions pointer synthetic for the entire
-    // process lifetime. TOW2 reaches normal loading with synthetic GetState,
-    // then fatals exactly when this cached SetOptions pointer begins forwarding
-    // into the real DLSS-G implementation.
-    static std::once_flag syntheticLog;
-    std::call_once(syntheticLog, []() {
-        LOG_INFO("RTXForge.NativeMfgMenu.v2b: native SetOptions remains synthetic");
-    });
+    // RTXForge v2c:
+    // Keep the game's early-cached SetOptions pointer permanently synthetic.
+    // Instrument only: capture what the native menu requests without ever
+    // crossing into the real DLSS-G plugin from this cached callsite.
+
+    // Normalize into our current struct without reading beyond the caller's
+    // older struct version. This mirrors the safe copy logic used by the real
+    // hkslDLSSGSetOptions hook.
+    sl::DLSSGOptions captured {};
+
+    if (options.structVersion == 1)
+        memcpy(&captured, &options, 104);
+    else if (options.structVersion == 2 || options.structVersion == 3)
+        memcpy(&captured, &options, 112);
+    else if (options.structVersion == 4 || options.structVersion == 5)
+        memcpy(&captured, &options, 120);
+    else
+        captured = options;
+
+    static std::mutex captureMutex;
+    static bool haveLast = false;
+    static uint32_t lastStructVersion = 0;
+    static uint32_t lastMode = 0;
+    static uint32_t lastGeneratedFrames = 0;
+    static uint32_t lastTargetFps = 0;
+
+    const uint32_t structVersion = options.structVersion;
+    const uint32_t mode = static_cast<uint32_t>(captured.mode);
+    const uint32_t generatedFrames = captured.numFramesToGenerate;
+    const uint32_t targetFps = captured.dynamicTargetFrameRate;
+
+    {
+        std::scoped_lock lock(captureMutex);
+
+        if (!haveLast ||
+            structVersion != lastStructVersion ||
+            mode != lastMode ||
+            generatedFrames != lastGeneratedFrames ||
+            targetFps != lastTargetFps)
+        {
+            LOG_INFO(
+                "RTXForge.NativeMfgMenu.v2c: native SetOptions request "
+                "viewport={} structVersion={} mode={} numFramesToGenerate={} dynamicTargetFrameRate={}",
+                static_cast<uint32_t>(viewport),
+                structVersion,
+                mode,
+                generatedFrames,
+                targetFps);
+
+            haveLast = true;
+            lastStructVersion = structVersion;
+            lastMode = mode;
+            lastGeneratedFrames = generatedFrames;
+            lastTargetFps = targetFps;
+        }
+    }
 
     return sl::Result::eOk;
 }
