@@ -318,27 +318,63 @@ static uint32_t AdvertisedMfgMax()
         return 1;
     const auto unlocked = MfgUnlock::UnlockedMax();
     const auto advertised = unlocked > 0 ? (unlocked < 3u ? unlocked : 3u) : 3u;
-    static const bool logged = []() { LOG_INFO("RTXForge.NativeMfgMenu.v1: capability ceiling 4X; native options passthrough"); return true; }();
+    static const bool logged = []() {
+        LOG_INFO("RTXForge.NativeMfgMenu.v2: capability ceiling 4X; late-bound native controls");
+        return true;
+    }();
     return advertised;
 }
 
-static sl::Result dummy_slDLSSGGetState(const sl::ViewportHandle& viewport, sl::DLSSGState& state,
-                                        const sl::DLSSGOptions* options)
+// Stable pointers returned to games that query DLSS-G before sl.dlss_g has loaded.
+// Games may cache these pointers for the entire process lifetime, so they must
+// change behavior in-place once the real DLSS-G exports become available.
+sl::Result StreamlineHooks::late_slDLSSGGetState(const sl::ViewportHandle& viewport, sl::DLSSGState& state,
+                                                 const sl::DLSSGOptions* options)
 {
-    state.numFramesActuallyPresented = 1; // TODO: can do better
+    if (o_slDLSSGGetState != nullptr)
+    {
+        static std::once_flag forwardingLog;
+        std::call_once(forwardingLog, []() {
+            LOG_INFO("RTXForge.NativeMfgMenu.v2: native GetState is now forwarding to real DLSSG");
+        });
+
+        return hkslDLSSGGetState(viewport, state, options);
+    }
+
+    state.numFramesActuallyPresented = 1;
+
     // Version 1 has no MFG fields; never write past the game-provided struct.
     if (state.structVersion >= 2)
     {
         state.numFramesToGenerateMax = AdvertisedMfgMax();
         state.bIsVsyncSupportAvailable = sl::Boolean::eTrue;
     }
-    state.estimatedVRAMUsageInBytes = 300 * 1024 * 1024;
+
+    state.estimatedVRAMUsageInBytes = static_cast<uint64_t>(300) * 1024 * 1024;
 
     return sl::Result::eOk;
 }
 
-static sl::Result dummy_slDLSSGSetOptions(const sl::ViewportHandle& viewport, const sl::DLSSGOptions& options)
+sl::Result StreamlineHooks::late_slDLSSGSetOptions(const sl::ViewportHandle& viewport,
+                                                   const sl::DLSSGOptions& options)
 {
+    if (o_slDLSSGSetOptions != nullptr)
+    {
+        static std::once_flag forwardingLog;
+        std::call_once(forwardingLog, []() {
+            LOG_INFO("RTXForge.NativeMfgMenu.v2: native SetOptions is now forwarding to real DLSSG");
+        });
+
+        // hkslDLSSGSetOptions preserves the game's numFramesToGenerate unless
+        // FGDLSSGOverrideInterpolationCount is explicitly configured.
+        return hkslDLSSGSetOptions(viewport, options);
+    }
+
+    static std::once_flag waitingLog;
+    std::call_once(waitingLog, []() {
+        LOG_INFO("RTXForge.NativeMfgMenu.v2: native SetOptions arrived before DLSSG resolved; waiting for runtime");
+    });
+
     return sl::Result::eOk;
 }
 
@@ -348,14 +384,14 @@ sl::Result StreamlineHooks::hkslGetFeatureFunction(sl::Feature feature, const ch
     {
         if (strcmp(functionName, "slDLSSGSetOptions") == 0)
         {
-            function = &dummy_slDLSSGSetOptions;
+            function = &late_slDLSSGSetOptions;
 
             return sl::Result::eOk;
         }
 
         if (strcmp(functionName, "slDLSSGGetState") == 0)
         {
-            function = &dummy_slDLSSGGetState;
+            function = &late_slDLSSGGetState;
 
             return sl::Result::eOk;
         }
@@ -1465,6 +1501,13 @@ void* StreamlineHooks::hkdlssg_slGetPluginFunction(const char* functionName)
     {
         o_slDLSSGSetOptions = (decltype(&slDLSSGSetOptions)) o_dlssg_slGetPluginFunction(functionName);
 
+        // Native games may have cached our early trampoline already. Resolve the
+        // companion call at the same time so forwarding is complete as soon as
+        // either real DLSS-G export becomes available.
+        if (o_slDLSSGSetOptions != nullptr && o_slDLSSGGetState == nullptr)
+            o_slDLSSGGetState =
+                (decltype(&slDLSSGGetState)) o_dlssg_slGetPluginFunction("slDLSSGGetState");
+
         // Give steam overlay the original as it seems to be hooking it
         auto steamOverlay = KernelBaseProxy::GetModuleHandleA_()("gameoverlayrenderer64.dll");
         if (steamOverlay != nullptr)
@@ -1479,6 +1522,12 @@ void* StreamlineHooks::hkdlssg_slGetPluginFunction(const char* functionName)
     if (strcmp(functionName, "slDLSSGGetState") == 0)
     {
         o_slDLSSGGetState = (decltype(&slDLSSGGetState)) o_dlssg_slGetPluginFunction(functionName);
+
+        // Whichever export appears first resolves the other one opportunistically
+        // for native games that cached our early trampoline.
+        if (o_slDLSSGGetState != nullptr && o_slDLSSGSetOptions == nullptr)
+            o_slDLSSGSetOptions =
+                (decltype(&slDLSSGSetOptions)) o_dlssg_slGetPluginFunction("slDLSSGSetOptions");
 
         // Give steam overlay the original as it seems to be hooking it
         auto steamOverlay = KernelBaseProxy::GetModuleHandleA_()("gameoverlayrenderer64.dll");

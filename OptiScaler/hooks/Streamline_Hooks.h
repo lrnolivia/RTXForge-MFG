@@ -262,6 +262,9 @@ class StreamlineHooks
     static bool hkdlssg_slOnPluginLoad(sl::param::IParameters* params, const char* loaderJSON, const char** pluginJSON);
     static sl::Result hkslSetConstants(const sl::Constants& values, const sl::FrameToken& frame,
                                        const sl::ViewportHandle& viewport);
+    static sl::Result late_slDLSSGSetOptions(const sl::ViewportHandle& viewport, const sl::DLSSGOptions& options);
+    static sl::Result late_slDLSSGGetState(const sl::ViewportHandle& viewport, sl::DLSSGState& state,
+                                           const sl::DLSSGOptions* options);
     static sl::Result hkslDLSSGSetOptions(const sl::ViewportHandle& viewport, const sl::DLSSGOptions& options);
     static sl::Result hkslDLSSGGetState(const sl::ViewportHandle& viewport, sl::DLSSGState& state,
                                         const sl::DLSSGOptions* options);
