@@ -337,12 +337,20 @@ bool DLSSG_Dx12::Dispatch()
     auto& state = State::Instance();
 
 
-    // RTXForge.NativeMfgMenu.v3d:
-    // Diagnostic only. This function is OptiScaler's own active DLSS-G
-    // execution path and already performs its normal raw Streamline SetOptions
-    // later below. Prove that this safe runtime dispatcher can observe the
-    // game's permanently-synthetic native MFG request. Do not apply it yet.
-    static uint64_t lastSeenNativeGeneration = 0;
+    // RTXForge.NativeMfgMenu.v3e:
+    //
+    // The game-facing SetOptions pointer remains permanently synthetic.
+    // A native eOn request is translated into OptiScaler's own internal
+    // DLSS-G interpolation count here, inside the already-running DLSS-G
+    // output dispatcher.
+    //
+    // We DO NOT make an additional Streamline call. The normal code below
+    // will construct DLSSGOptions and perform its usual raw SetOptions push.
+    //
+    // This first apply experiment intentionally handles only ordinary eOn
+    // 2X/3X/4X requests. Off / Auto / Dynamic remain unchanged for now.
+
+    static uint64_t lastHandledNativeGeneration = 0;
 
     uint64_t nativeGeneration = 0;
     uint32_t nativeSourceViewport = 0;
@@ -356,24 +364,75 @@ bool DLSSG_Dx12::Dispatch()
             nativeMode,
             nativeFrames,
             nativeTarget) &&
-        nativeGeneration != lastSeenNativeGeneration)
+        nativeGeneration != lastHandledNativeGeneration)
     {
-        lastSeenNativeGeneration = nativeGeneration;
+        lastHandledNativeGeneration = nativeGeneration;
 
-        LOG_INFO(
-            "RTXForge.NativeMfgMenu.v3d: internal DLSSG Dispatch sees pending native request "
-            "generation={} outputViewport={} sourceViewport={} mode={} "
-            "numFramesToGenerate={} dynamicTargetFrameRate={} "
-            "configuredOutputCount={} currentOutputCount={} maxOutputCount={}",
-            nativeGeneration,
-            static_cast<uint32_t>(viewport),
-            nativeSourceViewport,
-            nativeMode,
-            nativeFrames,
-            nativeTarget,
-            Config::Instance()->FGDLSSGInterpolationCount.value_or_default(),
-            _framesToInterpolate,
-            _maxInterpolationCount);
+        if (nativeMode == static_cast<uint32_t>(sl::DLSSGMode::eOn))
+        {
+            auto config = Config::Instance();
+
+            int requestedCount = static_cast<int>(nativeFrames);
+            bool explicitOverride = false;
+
+            // Preserve explicit RTXForge/OptiScaler override precedence.
+            if (config->FGDLSSGOverrideInterpolationCount.has_value())
+            {
+                requestedCount =
+                    config->FGDLSSGOverrideInterpolationCount.value();
+
+                explicitOverride = true;
+            }
+
+            if (requestedCount < 1)
+                requestedCount = 1;
+
+            if (_maxInterpolationCount > 0 &&
+                requestedCount > static_cast<int>(_maxInterpolationCount))
+            {
+                requestedCount =
+                    static_cast<int>(_maxInterpolationCount);
+            }
+
+            const int previousCount =
+                config->FGDLSSGInterpolationCount.value_or_default();
+
+            // Volatile: follow the native menu for this process without
+            // rewriting the user's persistent OptiScaler configuration.
+            config->FGDLSSGInterpolationCount.set_volatile_value(
+                requestedCount);
+
+            StreamlineHooks::consumeNativeDlssgRequest(
+                nativeGeneration);
+
+            LOG_INFO(
+                "RTXForge.NativeMfgMenu.v3e: applied native interpolation request "
+                "generation={} sourceViewport={} outputViewport={} "
+                "nativeFrames={} outputFrames={} previousOutputFrames={} "
+                "maxOutputFrames={} explicitOverride={}",
+                nativeGeneration,
+                nativeSourceViewport,
+                static_cast<uint32_t>(viewport),
+                nativeFrames,
+                requestedCount,
+                previousCount,
+                _maxInterpolationCount,
+                explicitOverride);
+        }
+        else
+        {
+            // Mark it handled so the old hkslDLSSGSetOptions bridge cannot
+            // unexpectedly consume this generation later.
+            StreamlineHooks::consumeNativeDlssgRequest(
+                nativeGeneration);
+
+            LOG_INFO(
+                "RTXForge.NativeMfgMenu.v3e: native mode not applied in this experiment "
+                "generation={} mode={} numFramesToGenerate={}",
+                nativeGeneration,
+                nativeMode,
+                nativeFrames);
+        }
     }
 
     if (Config::Instance()->FGDLSSGInterpolationCount.value_or_default() > _maxInterpolationCount)

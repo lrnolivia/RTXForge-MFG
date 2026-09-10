@@ -365,6 +365,17 @@ bool StreamlineHooks::peekNativeDlssgRequest(uint64_t& generation,
     return true;
 }
 
+void StreamlineHooks::consumeNativeDlssgRequest(uint64_t generation)
+{
+    std::scoped_lock lock(g_nativeDlssgBridge.mutex);
+
+    if (g_nativeDlssgBridge.valid &&
+        g_nativeDlssgBridge.generation == generation)
+    {
+        g_nativeDlssgBridge.lastConsumedGeneration = generation;
+    }
+}
+
 // Stable pointers returned to games that query DLSS-G before sl.dlss_g has loaded.
 // Games may cache these pointers for the entire process lifetime. Keep these
 // game-facing pointers synthetic permanently; native requests are bridged into
