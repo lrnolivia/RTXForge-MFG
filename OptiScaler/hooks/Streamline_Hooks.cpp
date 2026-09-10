@@ -336,7 +336,7 @@ struct NativeDlssgBridgeState
     uint32_t structVersion = 0;
     uint32_t mode = 0;
     uint32_t numFramesToGenerate = 1;
-    uint32_t dynamicTargetFrameRate = 0;
+    float dynamicTargetFrameRate = 0;
 
     uint64_t generation = 0;
     uint64_t lastConsumedGeneration = 0;
@@ -349,7 +349,7 @@ bool StreamlineHooks::peekNativeDlssgRequest(uint64_t& generation,
                                              uint32_t& sourceViewport,
                                              uint32_t& mode,
                                              uint32_t& numFramesToGenerate,
-                                             uint32_t& dynamicTargetFrameRate)
+                                             float& dynamicTargetFrameRate)
 {
     std::scoped_lock lock(g_nativeDlssgBridge.mutex);
 
@@ -430,7 +430,7 @@ sl::Result StreamlineHooks::late_slDLSSGSetOptions(const sl::ViewportHandle& vie
     const uint32_t capturedStructVersion = options.structVersion;
     const uint32_t capturedMode = static_cast<uint32_t>(captured.mode);
     const uint32_t capturedFrames = captured.numFramesToGenerate;
-    const uint32_t capturedTarget = captured.dynamicTargetFrameRate;
+    const float capturedTarget = captured.dynamicTargetFrameRate;
 
     bool changed = false;
     uint64_t generation = 0;
@@ -1308,7 +1308,7 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
     uint64_t bridgedGeneration = 0;
     uint32_t bridgedMode = 0;
     uint32_t bridgedFrames = 1;
-    uint32_t bridgedTarget = 0;
+    float bridgedTarget = 0;
 
     if (state.activeFgInput == FGInput::DLSSG)
     {

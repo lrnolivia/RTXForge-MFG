@@ -149,7 +149,7 @@ class StreamlineHooks
                                        uint32_t& sourceViewport,
                                        uint32_t& mode,
                                        uint32_t& numFramesToGenerate,
-                                       uint32_t& dynamicTargetFrameRate);
+                                       float& dynamicTargetFrameRate);
 
     static void consumeNativeDlssgRequest(uint64_t generation);
 

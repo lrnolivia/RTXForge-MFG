@@ -315,124 +315,42 @@ bool DLSSG_Dx12::Dispatch()
 {
     LOG_FUNC();
 
-    UINT64 willDispatchFrame = 0;
-    auto fIndex = GetDispatchIndex(willDispatchFrame);
-    if (fIndex < 0)
-        return false;
-
     if (!IsActive() || IsPaused())
         return false;
 
-    LOG_DEBUG("_frameCount: {}, willDispatchFrame: {}, fIndex: {}", _frameCount, willDispatchFrame, fIndex);
-
-    if (!_resourceReady[fIndex].contains(FG_ResourceType::Depth) ||
-        !_resourceReady[fIndex].at(FG_ResourceType::Depth) ||
-        !_resourceReady[fIndex].contains(FG_ResourceType::Velocity) ||
-        !_resourceReady[fIndex].at(FG_ResourceType::Velocity))
-    {
-        LOG_WARN("Depth or Velocity is not ready, skipping");
-        return false;
-    }
-
     auto& state = State::Instance();
-
-
-    // RTXForge.NativeMfgMenu.v3e:
-    //
-    // The game-facing SetOptions pointer remains permanently synthetic.
-    // A native eOn request is translated into OptiScaler's own internal
-    // DLSS-G interpolation count here, inside the already-running DLSS-G
-    // output dispatcher.
-    //
-    // We DO NOT make an additional Streamline call. The normal code below
-    // will construct DLSSGOptions and perform its usual raw SetOptions push.
-    //
-    // This first apply experiment intentionally handles only ordinary eOn
-    // 2X/3X/4X requests. Off / Auto / Dynamic remain unchanged for now.
-
-    static uint64_t lastHandledNativeGeneration = 0;
-
-    uint64_t nativeGeneration = 0;
-    uint32_t nativeSourceViewport = 0;
-    uint32_t nativeMode = 0;
-    uint32_t nativeFrames = 0;
-    uint32_t nativeTarget = 0;
-
-    if (StreamlineHooks::peekNativeDlssgRequest(
-            nativeGeneration,
-            nativeSourceViewport,
-            nativeMode,
-            nativeFrames,
-            nativeTarget) &&
-        nativeGeneration != lastHandledNativeGeneration)
+    uint64_t generation = 0;
+    uint32_t sourceViewport = 0, mode = 0, frames = 1;
+    float target = 0;
+    if (StreamlineHooks::peekNativeDlssgRequest(generation, sourceViewport, mode, frames, target) &&
+        generation != _nativeGeneration)
     {
-        lastHandledNativeGeneration = nativeGeneration;
-
-        if (nativeMode == static_cast<uint32_t>(sl::DLSSGMode::eOn))
+        _nativeGeneration = generation;
+        if (mode < static_cast<uint32_t>(sl::DLSSGMode::eCount))
         {
-            auto config = Config::Instance();
-
-            int requestedCount = static_cast<int>(nativeFrames);
-            bool explicitOverride = false;
-
-            // Preserve explicit RTXForge/OptiScaler override precedence.
-            if (config->FGDLSSGOverrideInterpolationCount.has_value())
-            {
-                requestedCount =
-                    config->FGDLSSGOverrideInterpolationCount.value();
-
-                explicitOverride = true;
-            }
-
-            if (requestedCount < 1)
-                requestedCount = 1;
-
-            if (_maxInterpolationCount > 0 &&
-                requestedCount > static_cast<int>(_maxInterpolationCount))
-            {
-                requestedCount =
-                    static_cast<int>(_maxInterpolationCount);
-            }
-
-            const int previousCount =
-                config->FGDLSSGInterpolationCount.value_or_default();
-
-            // Volatile: follow the native menu for this process without
-            // rewriting the user's persistent OptiScaler configuration.
-            config->FGDLSSGInterpolationCount.set_volatile_value(
-                requestedCount);
-
-            StreamlineHooks::consumeNativeDlssgRequest(
-                nativeGeneration);
-
-            LOG_INFO(
-                "RTXForge.NativeMfgMenu.v3e: applied native interpolation request "
-                "generation={} sourceViewport={} outputViewport={} "
-                "nativeFrames={} outputFrames={} previousOutputFrames={} "
-                "maxOutputFrames={} explicitOverride={}",
-                nativeGeneration,
-                nativeSourceViewport,
-                static_cast<uint32_t>(viewport),
-                nativeFrames,
-                requestedCount,
-                previousCount,
-                _maxInterpolationCount,
-                explicitOverride);
+            _nativeValid = true;
+            _nativeMode = static_cast<sl::DLSSGMode>(mode);
+            _nativeFrames = frames;
+            _nativeTarget = std::isfinite(target) && target >= 0 ? target : 0;
+            LOG_INFO("RTXForge.NativeMfgMenu.v4: native generation={} mode={} frames={} target={} sourceViewport={} outputViewport={}",
+                     generation, mode, frames, _nativeTarget, sourceViewport, static_cast<uint32_t>(viewport));
         }
         else
-        {
-            // Mark it handled so the old hkslDLSSGSetOptions bridge cannot
-            // unexpectedly consume this generation later.
-            StreamlineHooks::consumeNativeDlssgRequest(
-                nativeGeneration);
+            LOG_WARN("RTXForge.NativeMfgMenu.v4: ignored unknown native mode {}", mode);
+        // The controller remains synthetic. Only the normal output push below applies it.
+        StreamlineHooks::consumeNativeDlssgRequest(generation);
+    }
 
-            LOG_INFO(
-                "RTXForge.NativeMfgMenu.v3e: native mode not applied in this experiment "
-                "generation={} mode={} numFramesToGenerate={}",
-                nativeGeneration,
-                nativeMode,
-                nativeFrames);
-        }
+    if (_nativeValid && _nativeMode != sl::DLSSGMode::eOff)
+    {
+        const auto config = Config::Instance();
+        int count = config->FGDLSSGOverrideInterpolationCount.has_value()
+                        ? config->FGDLSSGOverrideInterpolationCount.value()
+                        : static_cast<int>(_nativeFrames > 0 ? _nativeFrames : 1);
+        count = (std::max)(1, count);
+        if (_maxInterpolationCount > 0)
+            count = (std::min)(count, static_cast<int>(_maxInterpolationCount));
+        config->FGDLSSGInterpolationCount.set_volatile_value(count);
     }
 
     if (Config::Instance()->FGDLSSGInterpolationCount.value_or_default() > _maxInterpolationCount)
@@ -451,15 +369,30 @@ bool DLSSG_Dx12::Dispatch()
     }
 
     sl::DLSSGOptions options {};
-    options.mode = sl::DLSSGMode::eOn;
+    options.mode = _nativeValid ? _nativeMode : sl::DLSSGMode::eOn;
     options.numFramesToGenerate = _framesToInterpolate;
+    if (_nativeValid && options.mode == sl::DLSSGMode::eDynamic)
+        options.dynamicTargetFrameRate = _nativeTarget;
     options.queueParallelismMode = sl::DLSSGQueueParallelismMode::eBlockPresentingClientQueue;
 
-    if (Config::Instance()->FGDLSSGForceDMFG.value_or_default())
+    if (options.mode != sl::DLSSGMode::eOff && Config::Instance()->FGDLSSGForceDMFG.value_or_default())
     {
         options.mode = sl::DLSSGMode::eDynamic;
         options.dynamicTargetFrameRate = Config::Instance()->FGDLSSGFramerateTargetDMFG.value_or_default();
     }
+
+    // An explicit count overrides Auto/Dynamic's multiplier selection, not a native Off.
+    if (Config::Instance()->FGDLSSGOverrideInterpolationCount.has_value())
+    {
+        if (Config::Instance()->FGDLSSGOverrideInterpolationCount.value() == 0)
+            options.mode = sl::DLSSGMode::eOff;
+        else if (options.mode != sl::DLSSGMode::eOff)
+            options.mode = sl::DLSSGMode::eOn;
+    }
+    if (options.mode != sl::DLSSGMode::eDynamic)
+        options.dynamicTargetFrameRate = 0;
+    if (options.mode == sl::DLSSGMode::eOff)
+        options.flags |= sl::DLSSGFlags::eRetainResourcesWhenOff;
 
     // StreamlineProxy holds the raw export, so this push bypasses hkslDLSSGSetOptions and its
     // interlock. Apply it here too.
@@ -471,6 +404,20 @@ bool DLSSG_Dx12::Dispatch()
     {
         LOG_ERROR("Couldn't set DLSSG options, error: {}", magic_enum::enum_name(dlssgSetOptionsResult));
     }
+
+    // Off must reach the existing SetOptions push even if the game stops supplying tags.
+    // Keep the context alive so a later On request can resume at this same boundary.
+    if (options.mode == sl::DLSSGMode::eOff)
+        return true;
+    UINT64 willDispatchFrame = 0;
+    auto fIndex = GetDispatchIndex(willDispatchFrame);
+    if (fIndex < 0)
+        return false;
+    if (!_resourceReady[fIndex].contains(FG_ResourceType::Depth) ||
+        !_resourceReady[fIndex].at(FG_ResourceType::Depth) ||
+        !_resourceReady[fIndex].contains(FG_ResourceType::Velocity) ||
+        !_resourceReady[fIndex].at(FG_ResourceType::Velocity))
+        return false;
 
     sl::ReflexOptions reflexConst = {};
     reflexConst.mode = sl::ReflexMode::eLowLatency;

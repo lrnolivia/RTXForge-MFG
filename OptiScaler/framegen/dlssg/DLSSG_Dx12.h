@@ -7,6 +7,11 @@
 class DLSSG_Dx12 : public virtual IFGFeature_Dx12
 {
   private:
+    uint64_t _nativeGeneration = 0;
+    sl::DLSSGMode _nativeMode = sl::DLSSGMode::eOn;
+    float _nativeTarget = 0;
+    uint32_t _nativeFrames = 1;
+    bool _nativeValid = false;
     uint32_t _width = 0;
     uint32_t _height = 0;
     std::optional<bool> _haveHudless = std::nullopt;
