@@ -357,21 +357,14 @@ sl::Result StreamlineHooks::late_slDLSSGGetState(const sl::ViewportHandle& viewp
 sl::Result StreamlineHooks::late_slDLSSGSetOptions(const sl::ViewportHandle& viewport,
                                                    const sl::DLSSGOptions& options)
 {
-    if (o_slDLSSGSetOptions != nullptr)
-    {
-        static std::once_flag forwardingLog;
-        std::call_once(forwardingLog, []() {
-            LOG_INFO("RTXForge.NativeMfgMenu.v2: native SetOptions is now forwarding to real DLSSG");
-        });
-
-        // hkslDLSSGSetOptions preserves the game's numFramesToGenerate unless
-        // FGDLSSGOverrideInterpolationCount is explicitly configured.
-        return hkslDLSSGSetOptions(viewport, options);
-    }
-
-    static std::once_flag waitingLog;
-    std::call_once(waitingLog, []() {
-        LOG_INFO("RTXForge.NativeMfgMenu.v2: native SetOptions arrived before DLSSG resolved; waiting for runtime");
+    // RTXForge v2b:
+    // Keep an early cached native SetOptions pointer synthetic for the entire
+    // process lifetime. TOW2 reaches normal loading with synthetic GetState,
+    // then fatals exactly when this cached SetOptions pointer begins forwarding
+    // into the real DLSS-G implementation.
+    static std::once_flag syntheticLog;
+    std::call_once(syntheticLog, []() {
+        LOG_INFO("RTXForge.NativeMfgMenu.v2b: native SetOptions remains synthetic");
     });
 
     return sl::Result::eOk;
