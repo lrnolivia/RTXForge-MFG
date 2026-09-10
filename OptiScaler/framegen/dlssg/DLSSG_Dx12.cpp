@@ -336,6 +336,46 @@ bool DLSSG_Dx12::Dispatch()
 
     auto& state = State::Instance();
 
+
+    // RTXForge.NativeMfgMenu.v3d:
+    // Diagnostic only. This function is OptiScaler's own active DLSS-G
+    // execution path and already performs its normal raw Streamline SetOptions
+    // later below. Prove that this safe runtime dispatcher can observe the
+    // game's permanently-synthetic native MFG request. Do not apply it yet.
+    static uint64_t lastSeenNativeGeneration = 0;
+
+    uint64_t nativeGeneration = 0;
+    uint32_t nativeSourceViewport = 0;
+    uint32_t nativeMode = 0;
+    uint32_t nativeFrames = 0;
+    uint32_t nativeTarget = 0;
+
+    if (StreamlineHooks::peekNativeDlssgRequest(
+            nativeGeneration,
+            nativeSourceViewport,
+            nativeMode,
+            nativeFrames,
+            nativeTarget) &&
+        nativeGeneration != lastSeenNativeGeneration)
+    {
+        lastSeenNativeGeneration = nativeGeneration;
+
+        LOG_INFO(
+            "RTXForge.NativeMfgMenu.v3d: internal DLSSG Dispatch sees pending native request "
+            "generation={} outputViewport={} sourceViewport={} mode={} "
+            "numFramesToGenerate={} dynamicTargetFrameRate={} "
+            "configuredOutputCount={} currentOutputCount={} maxOutputCount={}",
+            nativeGeneration,
+            static_cast<uint32_t>(viewport),
+            nativeSourceViewport,
+            nativeMode,
+            nativeFrames,
+            nativeTarget,
+            Config::Instance()->FGDLSSGInterpolationCount.value_or_default(),
+            _framesToInterpolate,
+            _maxInterpolationCount);
+    }
+
     if (Config::Instance()->FGDLSSGInterpolationCount.value_or_default() > _maxInterpolationCount)
     {
         Config::Instance()->FGDLSSGInterpolationCount = _maxInterpolationCount;

@@ -141,6 +141,16 @@ class StreamlineHooks
     static void updateForceReflex();
     static void updateDlssgOptions();
 
+    // RTXForge.NativeMfgMenu.v3d:
+    // Read-only snapshot of the permanently synthetic game-facing DLSS-G
+    // request bridge. Diagnostic consumers must not invoke game callbacks
+    // or mark a generation consumed.
+    static bool peekNativeDlssgRequest(uint64_t& generation,
+                                       uint32_t& sourceViewport,
+                                       uint32_t& mode,
+                                       uint32_t& numFramesToGenerate,
+                                       uint32_t& dynamicTargetFrameRate);
+
     // MenuOverlayVk submits on a queue it picks itself, into the present path DLSS-G's pacer owns;
     // the two cannot run together. Forces options.mode to eOff while the menu is up. Applies to every
     // DLSS-G option push, including the ones OptiScaler makes through StreamlineProxy.
