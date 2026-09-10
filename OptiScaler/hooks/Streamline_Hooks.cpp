@@ -1198,50 +1198,80 @@ bool StreamlineHooks::hklocal_dlssg_slOnPluginLoad(sl::param::IParameters* param
 sl::Result StreamlineHooks::hkslSetConstants(const sl::Constants& values, const sl::FrameToken& frame,
                                              const sl::ViewportHandle& viewport)
 {
-    std::scoped_lock lock(setConstantsMutex);
-    LOG_TRACE("called with frameIndex: {}, viewport: {}", (unsigned int) frame, (unsigned int) viewport);
+    // RTXForge.NativeMfgMenu.v3c:
+    // The game-facing cached SetOptions remains permanently synthetic.
+    // SetConstants is the proven live initialized runtime dispatcher.
+    //
+    // First detect a pending matching generation without consuming it.
+    // Then run the normal SetConstants path.
+    // Only after that succeeds, and after releasing setConstantsMutex,
+    // re-enter our initialized DLSS-G options hook using its last known
+    // options as the baseline. hkslDLSSGSetOptions overlays the bridge,
+    // preserves RTXForge override precedence / Dynamic handling, runs the
+    // MFG unlock, and finally invokes the real NVIDIA DLSS-G SetOptions.
 
-    // RTXForge.NativeMfgMenu.v3b:
-    // Diagnostic only. Prove that this already-initialized runtime path observes
-    // generations captured by the permanently synthetic game-facing SetOptions.
-    // Do not apply or forward DLSS-G from this probe.
-    static uint64_t lastSeenGeneration = 0;
-
-    uint64_t generation = 0;
-    uint32_t capturedViewport = 0;
-    uint32_t mode = 0;
-    uint32_t frames = 0;
-    bool valid = false;
+    bool shouldDispatchNativeMfg = false;
+    uint64_t pendingGeneration = 0;
+    uint32_t pendingMode = 0;
+    uint32_t pendingFrames = 0;
 
     {
         std::scoped_lock bridgeLock(g_nativeDlssgBridge.mutex);
 
-        valid = g_nativeDlssgBridge.valid;
-        generation = g_nativeDlssgBridge.generation;
-        capturedViewport = g_nativeDlssgBridge.viewport;
-        mode = g_nativeDlssgBridge.mode;
-        frames = g_nativeDlssgBridge.numFramesToGenerate;
+        if (g_nativeDlssgBridge.valid &&
+            g_nativeDlssgBridge.viewport == static_cast<uint32_t>(viewport) &&
+            g_nativeDlssgBridge.generation !=
+                g_nativeDlssgBridge.lastConsumedGeneration &&
+            o_slDLSSGSetOptions != nullptr)
+        {
+            shouldDispatchNativeMfg = true;
+            pendingGeneration = g_nativeDlssgBridge.generation;
+            pendingMode = g_nativeDlssgBridge.mode;
+            pendingFrames = g_nativeDlssgBridge.numFramesToGenerate;
+        }
     }
 
-    if (valid && generation != lastSeenGeneration)
+    sl::Result setConstantsResult {};
+
     {
-        lastSeenGeneration = generation;
+        std::scoped_lock lock(setConstantsMutex);
+
+        LOG_TRACE("called with frameIndex: {}, viewport: {}",
+                  (unsigned int) frame,
+                  (unsigned int) viewport);
+
+        State::Instance().slFGInputs.setConstants(values, (uint32_t) frame);
+
+        setConstantsResult = o_slSetConstants(values, frame, viewport);
+    }
+
+    if (shouldDispatchNativeMfg && setConstantsResult == sl::Result::eOk)
+    {
+        // Copy the baseline before entering hkslDLSSGSetOptions because that
+        // function updates lastDlssgOptions itself.
+        const sl::DLSSGOptions dispatchOptions = lastDlssgOptions;
 
         LOG_INFO(
-            "RTXForge.NativeMfgMenu.v3b: SetConstants sees pending native request "
-            "generation={} frame={} runtimeViewport={} capturedViewport={} "
-            "mode={} numFramesToGenerate={}",
-            generation,
+            "RTXForge.NativeMfgMenu.v3c: dispatching native request "
+            "generation={} frame={} viewport={} mode={} "
+            "numFramesToGenerate={}",
+            pendingGeneration,
             static_cast<uint32_t>(frame),
             static_cast<uint32_t>(viewport),
-            capturedViewport,
-            mode,
-            frames);
+            pendingMode,
+            pendingFrames);
+
+        const auto dispatchResult =
+            hkslDLSSGSetOptions(viewport, dispatchOptions);
+
+        LOG_INFO(
+            "RTXForge.NativeMfgMenu.v3c: native dispatch result "
+            "generation={} result={}",
+            pendingGeneration,
+            magic_enum::enum_name(dispatchResult));
     }
 
-    State::Instance().slFGInputs.setConstants(values, (uint32_t) frame);
-
-    return o_slSetConstants(values, frame, viewport);
+    return setConstantsResult;
 }
 
 bool StreamlineHooks::hkcommon_slOnPluginLoad(sl::param::IParameters* params, const char* loaderJSON,
