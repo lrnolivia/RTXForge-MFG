@@ -307,12 +307,31 @@ sl::Result StreamlineHooks::hkslGetFeatureVersion(sl::Feature feature, sl::Featu
     return o_slGetFeatureVersion(feature, version);
 }
 
+// RTXForge: menus query capabilities before the DLSS-G runtime is loaded.
+// Advertise up to 4X only for our explicitly enabled native DLSS-G route.
+static uint32_t AdvertisedMfgMax()
+{
+    const auto config = Config::Instance();
+    if (!config->FGDLSSGAdaMfgUnlock.value_or_default() ||
+        config->FGInput.value_or_default() != FGInput::DLSSG ||
+        config->FGOutput.value_or_default() != FGOutput::DLSSG)
+        return 1;
+    const auto unlocked = MfgUnlock::UnlockedMax();
+    const auto advertised = unlocked > 0 ? (unlocked < 3u ? unlocked : 3u) : 3u;
+    static const bool logged = []() { LOG_INFO("RTXForge.NativeMfgMenu.v1: capability ceiling 4X; native options passthrough"); return true; }();
+    return advertised;
+}
+
 static sl::Result dummy_slDLSSGGetState(const sl::ViewportHandle& viewport, sl::DLSSGState& state,
                                         const sl::DLSSGOptions* options)
 {
     state.numFramesActuallyPresented = 1; // TODO: can do better
-    state.numFramesToGenerateMax = 1;
-    state.bIsVsyncSupportAvailable = sl::Boolean::eTrue;
+    // Version 1 has no MFG fields; never write past the game-provided struct.
+    if (state.structVersion >= 2)
+    {
+        state.numFramesToGenerateMax = AdvertisedMfgMax();
+        state.bIsVsyncSupportAvailable = sl::Boolean::eTrue;
+    }
     state.estimatedVRAMUsageInBytes = 300 * 1024 * 1024;
 
     return sl::Result::eOk;
@@ -1328,7 +1347,7 @@ sl::Result StreamlineHooks::hkslDLSSGGetState(const sl::ViewportHandle& viewport
 
         // Struct version 1 ends at 56 bytes, ahead of this field.
         if (originalStructVersion >= 2)
-            state.numFramesToGenerateMax = 1;
+            state.numFramesToGenerateMax = AdvertisedMfgMax();
 
         LOG_DEBUG("Status: {}, numFramesActuallyPresented: {}", magic_enum::enum_name(state.status),
                   state.numFramesActuallyPresented);

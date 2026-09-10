@@ -1,4 +1,4 @@
-﻿#include "pch.h"
+#include "pch.h"
 #include "menu_common.h"
 #include <dlssnr/DlssNr_ExposureScan.h>
 
@@ -7171,7 +7171,15 @@ void MenuCommon::RenderMainMenuTable(RenderMenuContext& ctx)
 
         // Right column: image quality, initialization, advanced options, appearance, overlay and input settings.
         RenderActiveImageSettings(ctx);
-        DlssNr::RenderMenu(ctx.config, ctx.menuResScale);
+        // RTXForge route policy is fixed at startup, independent of the NR effect toggle.
+        static const bool rtxforgeNrPanel = [&]() {
+            const auto ini = std::filesystem::path(ctx.config->MainDllPath.value()) / L"OptiScaler.ini";
+            const bool enabled = GetPrivateProfileIntW(L"RTXForge", L"NrPanel", 1, ini.c_str()) != 0;
+            LOG_INFO("RTXForge.NrPanel.v1: {}", enabled);
+            return enabled;
+        }();
+        if (rtxforgeNrPanel)
+            DlssNr::RenderMenu(ctx.config, ctx.menuResScale);
         RenderMagnifierSettings(ctx);
         RenderQuirksSettings(ctx);
         RenderAdvancedSettings(ctx);
