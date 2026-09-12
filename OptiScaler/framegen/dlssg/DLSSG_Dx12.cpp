@@ -346,7 +346,7 @@ bool DLSSG_Dx12::Dispatch()
         const auto config = Config::Instance();
         int count = config->FGDLSSGOverrideInterpolationCount.has_value()
                         ? config->FGDLSSGOverrideInterpolationCount.value()
-                        : static_cast<int>(_nativeFrames > 0 ? _nativeFrames : 1);
+                        : static_cast<int>((std::min)((std::max)(_nativeFrames, 1u), 8u));
         count = (std::max)(1, count);
         if (_maxInterpolationCount > 0)
             count = (std::min)(count, static_cast<int>(_maxInterpolationCount));
@@ -408,7 +408,7 @@ bool DLSSG_Dx12::Dispatch()
     // Off must reach the existing SetOptions push even if the game stops supplying tags.
     // Keep the context alive so a later On request can resume at this same boundary.
     if (options.mode == sl::DLSSGMode::eOff)
-        return true;
+        return dlssgSetOptionsResult == sl::Result::eOk;
     UINT64 willDispatchFrame = 0;
     auto fIndex = GetDispatchIndex(willDispatchFrame);
     if (fIndex < 0)
