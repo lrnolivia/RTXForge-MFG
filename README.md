@@ -1,3 +1,11 @@
+# RTXForge-MFG
+
+This repository is a fork of [OptiScaler DLSSNR Multipass MFG](https://github.com/y4my4my4m/OptiScaler_DLSSNR_Multipass_MFG), carrying work used by rtxForge. The default branch is `dlss-neural-rendering`.
+
+The upstream guide below keeps its original installation advice, compatibility warnings, credits, and support links. Its OptiScaler download links refer to upstream releases, not releases of this fork. For this branch's neural-rendering work, see [the DLSSNR documentation](OptiScaler/dlssnr/README.md).
+
+## Upstream guide
+
 <div align="center">
 
   ![Logo](https://github.com/user-attachments/assets/c7dad5da-0b29-4710-8a57-b58e4e407abd)
